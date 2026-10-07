@@ -12,3 +12,5 @@ wheels/
 # Secrets and agent scratch space
 .env
 workspace/
+
+.DS_Store
