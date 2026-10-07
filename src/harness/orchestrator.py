@@ -13,6 +13,7 @@ from openai import OpenAI
 
 from harness.agent import run_agent
 from harness.config_loader import load_agent_config
+from harness.tools import Toolset
 
 # Located relative to this file, so `uv run harness` works from any directory.
 AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
@@ -35,10 +36,11 @@ def make_client() -> OpenAI:
 
 
 def run(task: str, agent_name: str = "base") -> str:
-    """Load the named agent's config, build its client, run it on `task`."""
+    """Load the named agent's config, build its client and toolset, run it on `task`."""
     config = load_agent_config(AGENTS_DIR / f"{agent_name}.md")
     client = make_client()
-    return run_agent(task, config, client)
+    toolset = Toolset(config.get("tools", []))  # no `tools:` key means no tools: access is opt-in
+    return run_agent(task, config, client, toolset)
 
 
 def main() -> None:

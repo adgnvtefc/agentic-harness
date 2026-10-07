@@ -2,11 +2,11 @@
 
 from openai import OpenAI
 
-from harness.tools import TOOL_SCHEMAS, execute_tool
+from harness.tools import Toolset
 
 
-def call_model(client: OpenAI, messages: list[dict], model: str, temperature: float):
-    """Send `messages` + TOOL_SCHEMAS to `model`. Return the assistant message object."""
+def call_model(client: OpenAI, messages: list[dict], model: str, temperature: float, tools: list[dict]):
+    """Send `messages` + `tools` (schemas) to `model`. Return the assistant message object."""
     # This becomes: POST {base_url}/chat/completions with a JSON body like
     #   {
     #     "model": "Qwen3.8-27B-MLX-8bit",       which model on the server (one server can host many)
@@ -26,9 +26,9 @@ def call_model(client: OpenAI, messages: list[dict], model: str, temperature: fl
         "messages": messages,
         "temperature": temperature,
     }
-    # Some servers reject an empty "tools" list, so only send it once tools exist.
-    if TOOL_SCHEMAS:
-        kwargs["tools"] = TOOL_SCHEMAS
+    # Some servers reject an empty "tools" list, so only send it when the agent has tools.
+    if tools:
+        kwargs["tools"] = tools
     response = client.chat.completions.create(**kwargs)
 
     # The response JSON looks like
@@ -51,20 +51,22 @@ def call_model(client: OpenAI, messages: list[dict], model: str, temperature: fl
     #     "usage": {"prompt_tokens": ..., "completion_tokens": ...},
     #   }
     # The SDK parses this into Python objects, so fields are attributes: response.choices[0].message.content
-    # NOTE: for qwen, also have reasoning_content
     return response.choices[0].message
 
-
-def run_agent(task: str, config: dict, client: OpenAI) -> str:
+# PROVIDER-SPECIFIC: oMLX/Qwen puts thinking in `reasoning_content`; dropping it is a cache
+# optimization. Anthropic's native API requires thinking blocks to be sent back. Fix later.
+def run_agent(task: str, config: dict, client: OpenAI, toolset: Toolset) -> str:
     """Run the loop until the model answers without calling a tool, or max_steps runs out.
 
-    `config` comes from config_loader.load_agent_config; `client` from make_client.
+    `config` comes from config_loader.load_agent_config; `client` from make_client;
+    `toolset` holds only the tools this agent's config lists.
     The agent is handed everything it needs and never goes looking for settings itself.
 
     Return the model's final text answer. Print each tool call and a short
     preview of its result as you go, so you can watch the agent work.
     """
     max_steps = config["max_steps"]
+    tools = toolset.schemas()  # same list every turn, which keeps the prompt cache hitting
 
     # The conversation IS the agent's memory. Every turn we send all of it.
     messages = [
@@ -74,7 +76,7 @@ def run_agent(task: str, config: dict, client: OpenAI) -> str:
 
     for step in range(1, max_steps + 1):
         # calls the client with model and these messages
-        msg = call_model(client, messages, config["model"], config["temperature"])
+        msg = call_model(client, messages, config["model"], config["temperature"], tools)
 
         # Append the assistant turn exactly as returned, tool_calls and their ids included,
         # so the tool results we add next have something to point back to.
@@ -90,8 +92,8 @@ def run_agent(task: str, config: dict, client: OpenAI) -> str:
         for call in msg.tool_calls:
             # prints function call name and arguments
             print(f"[step {step}] {call.function.name}({call.function.arguments})")
-            # executes teh tool
-            result = execute_tool(call.function.name, call.function.arguments)
+            # executes the tool; the toolset refuses tools this agent wasn't given
+            result = toolset.execute(call.function.name, call.function.arguments)
             # determines preview to print
             preview = result if len(result) <= 200 else result[:200] + "..."
             print(f"  -> {preview}")
