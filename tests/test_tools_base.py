@@ -9,13 +9,18 @@ from harness.tools.base import MAX_OUTPUT_CHARS, Tool, truncate
 
 class TestTool:
     def test_name_comes_from_schema(self):
-        tool = Tool(fn=lambda: "", schema={"type": "function", "function": {"name": "abc"}})
+        tool = Tool(fn=lambda: "", schema={"type": "function", "function": {"name": "abc"}}, permission="allow")
         assert tool.name == "abc"
 
     def test_is_frozen(self):
-        tool = Tool(fn=lambda: "", schema={"function": {"name": "abc"}})
+        tool = Tool(fn=lambda: "", schema={"function": {"name": "abc"}}, permission="allow")
         with pytest.raises(dataclasses.FrozenInstanceError):
             tool.fn = lambda: "other"
+
+    def test_permission_is_required(self):
+        # No default value: a tool that forgets to declare one fails at definition time.
+        with pytest.raises(TypeError, match="permission"):
+            Tool(fn=lambda: "", schema={"function": {"name": "abc"}})
 
 
 class TestTruncate:

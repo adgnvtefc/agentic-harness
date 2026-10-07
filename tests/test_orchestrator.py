@@ -3,6 +3,7 @@
 import pytest
 
 from harness import orchestrator
+from harness.policy import deny_all, terminal_approver
 from harness.tools import Toolset
 from tests.fakes import FakeClient, reply
 
@@ -80,6 +81,12 @@ class TestRun:
         assert isinstance(captured_run["client"], FakeClient)
         assert isinstance(captured_run["toolset"], Toolset)
         assert list(captured_run["toolset"].tools) == ["read_file", "bash"]
+        assert captured_run["toolset"].policy.approver is terminal_approver  # a human answers "ask"
+
+    def test_unattended_uses_deny_all(self, agents_dir, captured_run):
+        write_agent(agents_dir, "base", tools=["bash"])
+        orchestrator.run("t", unattended=True)
+        assert captured_run["toolset"].policy.approver is deny_all
 
     def test_default_agent_is_base(self, agents_dir, captured_run):
         write_agent(agents_dir, "base", prompt="I am base.")
@@ -119,16 +126,64 @@ class TestRun:
 
 
 class TestMain:
-    def test_joins_arguments_into_one_task(self, monkeypatch, capsys):
-        seen = {}
-        monkeypatch.setattr(orchestrator, "run", lambda task: seen.setdefault("task", task) and "printed answer")
-        monkeypatch.setattr("sys.argv", ["harness", "list", "the", "files"])
-        orchestrator.main()
-        assert seen["task"] == "list the files"
+    @pytest.fixture
+    def run_calls(self, agents_dir, monkeypatch):
+        """Replace orchestrator.run; record the keyword arguments main() passes it."""
+        write_agent(agents_dir, "base")
+        write_agent(agents_dir, "reader")
+        calls = []
+
+        def fake_run(task, **kwargs):
+            calls.append({"task": task, **kwargs})
+            return "printed answer"
+
+        monkeypatch.setattr(orchestrator, "run", fake_run)
+        return calls
+
+    def test_joins_words_into_one_task(self, run_calls, capsys):
+        orchestrator.main(["list", "the", "files"])
+        assert run_calls == [{"task": "list the files", "agent_name": "base", "unattended": False}]
         assert capsys.readouterr().out.strip() == "printed answer"
 
-    @pytest.mark.parametrize("argv", [["harness"], ["harness", ""], ["harness", "   "]])
-    def test_no_task_prints_usage(self, monkeypatch, argv):
-        monkeypatch.setattr("sys.argv", argv)
-        with pytest.raises(SystemExit, match="usage"):
-            orchestrator.main()
+    def test_quoted_task(self, run_calls):
+        orchestrator.main(["list the files"])
+        assert run_calls[0]["task"] == "list the files"
+
+    def test_agent_flag(self, run_calls):
+        orchestrator.main(["--agent", "reader", "hi"])
+        assert run_calls[0]["agent_name"] == "reader"
+
+    def test_unattended_flag(self, run_calls):
+        orchestrator.main(["--unattended", "hi"])
+        assert run_calls[0]["unattended"] is True
+
+    def test_flags_after_task(self, run_calls):
+        orchestrator.main(["do", "it", "--unattended", "--agent", "reader"])
+        assert run_calls == [{"task": "do it", "agent_name": "reader", "unattended": True}]
+
+    def test_unknown_agent_lists_real_ones(self, run_calls, capsys):
+        with pytest.raises(SystemExit) as exit_info:
+            orchestrator.main(["--agent", "ghost", "hi"])
+        assert exit_info.value.code == 2  # argparse's "bad usage" exit code
+        assert "invalid choice: 'ghost' (choose from base, reader)" in capsys.readouterr().err
+        assert run_calls == []
+
+    @pytest.mark.parametrize("argv", [[], [""], ["   "]])
+    def test_no_task_is_a_usage_error(self, run_calls, capsys, argv):
+        with pytest.raises(SystemExit) as exit_info:
+            orchestrator.main(argv)
+        assert exit_info.value.code == 2
+        assert "usage: harness" in capsys.readouterr().err
+        assert run_calls == []
+
+    def test_help(self, run_calls, capsys):
+        with pytest.raises(SystemExit) as exit_info:
+            orchestrator.main(["--help"])
+        assert exit_info.value.code == 0
+        out = capsys.readouterr().out
+        assert "--agent" in out and "--unattended" in out
+
+    def test_reads_real_command_line_by_default(self, run_calls, monkeypatch):
+        monkeypatch.setattr("sys.argv", ["harness", "from", "argv"])
+        orchestrator.main()
+        assert run_calls[0]["task"] == "from argv"

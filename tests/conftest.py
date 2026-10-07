@@ -56,6 +56,7 @@ def fake_tools(monkeypatch):
     echo:  returns its `text` argument; has an optional `suffix` with a default.
     boom:  always raises RuntimeError, to test that tool exceptions don't escape.
     count: returns an int (not a str), to test that results are stringified.
+    guarded: permission "ask"; records each call in `guarded.calls`, to test enforcement.
     """
 
     def echo(text: str, suffix: str = "") -> str:
@@ -67,10 +68,17 @@ def fake_tools(monkeypatch):
     def count() -> int:
         return 42
 
+    def guarded(target: str) -> str:
+        guarded.calls.append(target)
+        return f"did {target}"
+
+    guarded.calls = []
+
     tools = {
-        "echo": Tool(fn=echo, schema=_schema("echo", {"text": "string", "suffix": "string"}, ["text"])),
-        "boom": Tool(fn=boom, schema=_schema("boom", {}, [])),
-        "count": Tool(fn=count, schema=_schema("count", {}, [])),
+        "echo": Tool(fn=echo, schema=_schema("echo", {"text": "string", "suffix": "string"}, ["text"]), permission="allow"),
+        "boom": Tool(fn=boom, schema=_schema("boom", {}, []), permission="allow"),
+        "count": Tool(fn=count, schema=_schema("count", {}, []), permission="allow"),
+        "guarded": Tool(fn=guarded, schema=_schema("guarded", {"target": "string"}, ["target"]), permission="ask"),
     }
     for name, tool in tools.items():
         monkeypatch.setitem(REGISTRY, name, tool)

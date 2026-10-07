@@ -1,4 +1,4 @@
-"""Shell tool: runs commands in WORKSPACE after the human approves them."""
+"""Shell tool: runs commands in WORKSPACE. Its permission is "ask": the Policy gets approval first."""
 
 import os
 import signal
@@ -10,18 +10,10 @@ from harness.tools.base import WORKSPACE, Tool, truncate
 def bash(command: str, timeout: int = 30) -> str:
     """Run `command` in a shell with cwd=WORKSPACE and return combined stdout/stderr + exit code.
 
-    Before running, print the command and ask the human y/N. Anything but "y" means
-    return a message telling the model the user declined. (Real sandboxing is Phase 2.)
+    Approval is not this function's job: BASH's permission is "ask", so the Policy
+    checks with the human before this ever runs. (Real sandboxing is Phase 2.)
     Truncate huge output so one command can't flood the context window.
     """
-    print(f"\n  agent wants to run: {command}")
-    try:
-        answer = input("  allow? [y/N] ").strip().lower()
-    except EOFError:  # no terminal attached (e.g. piped input): treat as "no"
-        answer = ""
-    if answer != "y":
-        return "The user declined to run this command. Try a different approach or ask the user."
-
     WORKSPACE.mkdir(exist_ok=True)
     proc = subprocess.Popen(
         command,
@@ -73,4 +65,5 @@ BASH = Tool(
             },
         },
     },
+    permission="ask",
 )

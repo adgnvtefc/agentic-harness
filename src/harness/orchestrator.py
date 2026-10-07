@@ -4,8 +4,8 @@ The orchestrator wires things together and does no work itself. Everything else
 is imported here; nothing imports the orchestrator.
 """
 
+import argparse
 import os
-import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -13,6 +13,7 @@ from openai import OpenAI
 
 from harness.agent import run_agent
 from harness.config_loader import load_agent_config
+from harness.policy import Policy, deny_all, terminal_approver
 from harness.tools import Toolset
 
 # Located relative to this file, so `uv run harness` works from any directory.
@@ -35,18 +36,39 @@ def make_client() -> OpenAI:
     )
 
 
-def run(task: str, agent_name: str = "base") -> str:
-    """Load the named agent's config, build its client and toolset, run it on `task`."""
+def run(task: str, agent_name: str = "base", unattended: bool = False) -> str:
+    """Load the named agent's config, build its client, policy, and toolset, run it on `task`.
+
+    `unattended`: nobody is at the terminal, so every "ask" is answered no.
+    """
     config = load_agent_config(AGENTS_DIR / f"{agent_name}.md")
     client = make_client()
-    toolset = Toolset(config.get("tools", []))  # no `tools:` key means no tools: access is opt-in
+    policy = Policy(approver=deny_all if unattended else terminal_approver)
+    toolset = Toolset(config.get("tools", []), policy)  # no `tools:` key means no tools: access is opt-in
     return run_agent(task, config, client, toolset)
 
 
-def main() -> None:
-    """CLI entry point: `uv run harness "your task here"`."""
-    # this allows us to pass in command line arguments without quotes
-    task = " ".join(sys.argv[1:]).strip()
+def main(argv: list[str] | None = None) -> None:
+    """CLI entry point: `uv run harness [--agent NAME] [--unattended] your task here`.
+
+    `argv` defaults to the real command line; tests pass their own list.
+    """
+    agents = sorted(path.stem for path in AGENTS_DIR.glob("*.md"))
+    
+    # this block is ai generated and i am trusting it works
+    parser = argparse.ArgumentParser(prog="harness", description="Run an agent on a task.")
+    # nargs="+" collects every remaining word, so quotes around the task are optional
+    parser.add_argument("task", nargs="+", help="what the agent should do")
+    # choices: a typo'd agent name fails right here, with the list of real ones
+    parser.add_argument("--agent", default="base", choices=agents, help="which agent in agents/ to run (default: base)")
+    parser.add_argument(
+        "--unattended",
+        action="store_true",  # a flag: present means True, absent means False
+        help="never prompt; tools that would ask for approval are declined (for scripts and evals)",
+    )
+    args = parser.parse_args(argv)
+
+    task = " ".join(args.task).strip()
     if not task:
-        raise SystemExit('usage: uv run harness "your task here"')
-    print(run(task))
+        parser.error("the task is empty")  # prints usage and exits, like any other bad argument
+    print(run(task, agent_name=args.agent, unattended=args.unattended))

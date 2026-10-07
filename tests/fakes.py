@@ -10,7 +10,12 @@ import json
 
 from openai.types.chat import ChatCompletion
 
+from harness.policy import Policy, deny_all
+
 _ids = itertools.count(1)
+
+# A policy for tests that don't care about approval: "allow" tools run, "ask" tools are refused.
+NO_HUMAN = Policy(approver=deny_all)
 
 
 def call(name: str, args: dict | str | None = None, id: str | None = None) -> dict:

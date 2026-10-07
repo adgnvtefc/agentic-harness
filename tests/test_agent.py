@@ -4,7 +4,7 @@ import pytest
 
 from harness.agent import call_model, run_agent
 from harness.tools import Toolset
-from tests.fakes import FakeClient, always, call, reply
+from tests.fakes import NO_HUMAN, FakeClient, always, call, reply
 
 CONFIG = {"model": "test-model", "temperature": 0.3, "max_steps": 5, "system_prompt": "You are a test agent."}
 
@@ -12,7 +12,7 @@ CONFIG = {"model": "test-model", "temperature": 0.3, "max_steps": 5, "system_pro
 def run(replies, task="do the thing", tools=("echo",), **config_overrides):
     """Run the loop against scripted replies. Returns (final answer, client) for inspection."""
     client = FakeClient(replies)
-    answer = run_agent(task, {**CONFIG, **config_overrides}, client, Toolset(list(tools)))
+    answer = run_agent(task, {**CONFIG, **config_overrides}, client, Toolset(list(tools), NO_HUMAN))
     return answer, client
 
 

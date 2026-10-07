@@ -5,6 +5,7 @@ import pytest
 from harness.config_loader import load_agent_config
 from harness.orchestrator import AGENTS_DIR
 from harness.tools import Toolset
+from tests.fakes import NO_HUMAN
 
 AGENT_FILES = sorted(AGENTS_DIR.glob("*.md"))
 REQUIRED = {"model": str, "temperature": (int, float), "max_steps": int, "system_prompt": str}
@@ -38,4 +39,4 @@ class TestAgentFile:
     def test_tools_exist(self, path):
         tools = load_agent_config(path).get("tools", [])
         assert isinstance(tools, list)
-        Toolset(tools)  # raises on any unknown tool name
+        Toolset(tools, NO_HUMAN)  # raises on any unknown tool name

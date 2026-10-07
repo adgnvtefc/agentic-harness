@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from harness.policy import Permission
+
 # All file and shell access is confined to this directory for Phase 1.
 # (parents[3]: base.py -> tools -> harness -> src -> project root)
 # NOTE: Unscalable, fix later.
@@ -21,6 +23,8 @@ class Tool:
     # Callable means function takes arguments, return str
     fn: Callable[..., str]
     schema: dict
+    # Default permission. Required, with no default value: a new tool can't silently become "allow".
+    permission: Permission
 
     # makes so that tool.name is a field, but is computed from schema
     @property

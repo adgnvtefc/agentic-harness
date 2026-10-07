@@ -62,6 +62,7 @@ READ_FILE = Tool(
             },
         },
     },
+    permission="allow",
 )
 
 WRITE_FILE = Tool(
@@ -87,4 +88,5 @@ WRITE_FILE = Tool(
             },
         },
     },
+    permission="allow",
 )
