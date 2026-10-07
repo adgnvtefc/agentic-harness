@@ -1,34 +1,12 @@
 """The agent loop: call the model, run any tool calls, feed results back, repeat."""
 
-import os
-import sys
-
-from dotenv import load_dotenv
 from openai import OpenAI
 
 from harness.tools import TOOL_SCHEMAS, execute_tool
 
-SYSTEM_PROMPT = """Hello! You are a helpful AI agent."""  # Write this yourself: who the agent is, where it works, how to use tools.
 
-
-def make_client() -> OpenAI:
-    """Load .env and return an OpenAI client pointed at oMLX (OMLX_BASE_URL, OMLX_API_KEY)."""
-    # reads .env, copies each KEY=value into process env, os.environ can see all
-    load_dotenv()
-
-    # get the api key
-    api_key = os.environ.get("OMLX_API_KEY")
-    if not api_key:
-        raise SystemExit("OMLX_API_KEY is not set. Copy .env.example to .env and fill it in.")
-    return OpenAI(
-        base_url=os.environ.get("OMLX_BASE_URL", "http://127.0.0.1:8000/v1"),
-        api_key=api_key,
-        timeout=600,
-    )
-
-
-def call_model(client: OpenAI, messages: list[dict]):
-    """Send `messages` + TOOL_SCHEMAS to MODEL. Return the assistant message object."""
+def call_model(client: OpenAI, messages: list[dict], model: str, temperature: float):
+    """Send `messages` + TOOL_SCHEMAS to `model`. Return the assistant message object."""
     # This becomes: POST {base_url}/chat/completions with a JSON body like
     #   {
     #     "model": "Qwen3.8-27B-MLX-8bit",       which model on the server (one server can host many)
@@ -44,9 +22,9 @@ def call_model(client: OpenAI, messages: list[dict]):
     #     "temperature": 0.6                      randomness; lower = more consistent tool calls
     #   }
     kwargs = {
-        "model": os.environ.get("MODEL", "Qwen3.8-27B-MLX-8bit"),
+        "model": model,
         "messages": messages,
-        "temperature": 0.6,
+        "temperature": temperature,
     }
     # Some servers reject an empty "tools" list, so only send it once tools exist.
     if TOOL_SCHEMAS:
@@ -77,25 +55,26 @@ def call_model(client: OpenAI, messages: list[dict]):
     return response.choices[0].message
 
 
-def run_agent(task: str, max_steps: int = 20) -> str:
+def run_agent(task: str, config: dict, client: OpenAI) -> str:
     """Run the loop until the model answers without calling a tool, or max_steps runs out.
+
+    `config` comes from config_loader.load_agent_config; `client` from make_client.
+    The agent is handed everything it needs and never goes looking for settings itself.
 
     Return the model's final text answer. Print each tool call and a short
     preview of its result as you go, so you can watch the agent work.
     """
-
-    # creates a client to send request to
-    client = make_client()
+    max_steps = config["max_steps"]
 
     # The conversation IS the agent's memory. Every turn we send all of it.
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "system", "content": config["system_prompt"]},
         {"role": "user", "content": task},
     ]
 
     for step in range(1, max_steps + 1):
         # calls the client with model and these messages
-        msg = call_model(client, messages)
+        msg = call_model(client, messages, config["model"], config["temperature"])
 
         # Append the assistant turn exactly as returned, tool_calls and their ids included,
         # so the tool results we add next have something to point back to.
@@ -120,12 +99,3 @@ def run_agent(task: str, max_steps: int = 20) -> str:
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
     return f"Stopped after {max_steps} steps without a final answer."
-
-
-def main() -> None:
-    """CLI entry point: `uv run harness "your task here"`."""
-    # this allows us to pass in command line arguments without quotes
-    task = " ".join(sys.argv[1:]).strip()
-    if not task:
-        raise SystemExit('usage: uv run harness "your task here"')
-    print(run_agent(task))
