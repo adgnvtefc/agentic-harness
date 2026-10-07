@@ -24,7 +24,8 @@ def load_agent_config(path: str | Path) -> dict:
     if not lines or lines[0].strip() != "---":
         raise ValueError(f"{path}: must start with a '---' line")
     try:
-        end = lines.index("---", 1)
+        # strip() so trailing whitespace on the closing line is tolerated, same as the opening one
+        end = [line.strip() for line in lines].index("---", 1)
     except ValueError:
         raise ValueError(f"{path}: no closing '---' line after the settings") from None
 

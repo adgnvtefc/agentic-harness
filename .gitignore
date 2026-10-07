@@ -14,3 +14,7 @@ wheels/
 workspace/
 
 .DS_Store
+# Test artifacts
+.coverage
+.pytest_cache/
+htmlcov/

@@ -1,5 +1,7 @@
 """Shell tool: runs commands in WORKSPACE after the human approves them."""
 
+import os
+import signal
 import subprocess
 
 from harness.tools.base import WORKSPACE, Tool, truncate
@@ -21,21 +23,27 @@ def bash(command: str, timeout: int = 30) -> str:
         return "The user declined to run this command. Try a different approach or ask the user."
 
     WORKSPACE.mkdir(exist_ok=True)
+    proc = subprocess.Popen(
+        command,
+        shell=True,
+        cwd=WORKSPACE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        stdin=subprocess.DEVNULL,  # a command waiting for input would otherwise hang until timeout
+        # The shell becomes leader of a new process group, and everything it starts joins
+        # that group. On timeout we kill the whole group: killing just the shell would
+        # leave its children (servers, test runners, `sleep`) running as orphans.
+        start_new_session=True,
+    )
     try:
-        result = subprocess.run(
-            command,
-            shell=True,
-            cwd=WORKSPACE,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            stdin=subprocess.DEVNULL,  # a command waiting for input would otherwise hang until timeout
-        )
+        stdout, stderr = proc.communicate(timeout=timeout)
     except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)  # proc.pid is also the group id, since it leads the group
+        proc.communicate()  # reap the killed shell and close its pipes
         return f"Command timed out after {timeout}s and was killed."
 
-    output = result.stdout + result.stderr
-    return truncate(f"{output}\n(exit code {result.returncode})".strip())
+    return truncate(f"{stdout + stderr}\n(exit code {proc.returncode})".strip())
 
 
 BASH = Tool(

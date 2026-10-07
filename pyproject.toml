@@ -16,3 +16,18 @@ harness = "harness.orchestrator:main"
 [build-system]
 requires = ["uv_build>=0.12.23,<0.13.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# -ra: summarize skips/xfails at the end.  --strict-markers: a typo'd marker is an error.
+# Live tests hit a real model server; they're opt-in: `uv run pytest -m live`.
+addopts = ["-ra", "--strict-markers", "-m", "not live"]
+markers = [
+    "live: needs a running oMLX server and OMLX_API_KEY (deselected by default)",
+]
