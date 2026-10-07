@@ -1,3 +1,6 @@
 This is a learning project.
 
-Changelog 10/6: got harness running with minimal features. can answer simple queries.
+Changelog 
+10/7: small refactor for scalable design in tools
+
+10/6: got harness running with minimal features. can answer simple queries.
