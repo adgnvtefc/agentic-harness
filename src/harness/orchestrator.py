@@ -6,6 +6,7 @@ is imported here; nothing imports the orchestrator.
 
 import argparse
 import os
+import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -15,9 +16,11 @@ from harness.agent import run_agent
 from harness.config_loader import load_agent_config
 from harness.policy import Policy, deny_all, terminal_approver
 from harness.tools import Toolset
+from harness.tracer import Tracer, new_trace_path
 
 # Located relative to this file, so `uv run harness` works from any directory.
 AGENTS_DIR = Path(__file__).resolve().parents[2] / "agents"
+TRACES_DIR = Path(__file__).resolve().parents[2] / "traces"
 
 
 def make_client() -> OpenAI:
@@ -37,15 +40,21 @@ def make_client() -> OpenAI:
 
 
 def run(task: str, agent_name: str = "base", unattended: bool = False) -> str:
-    """Load the named agent's config, build its client, policy, and toolset, run it on `task`.
+    """Load the named agent's config, build its client, policy, toolset, and tracer, run it on `task`.
 
     `unattended`: nobody is at the terminal, so every "ask" is answered no.
     """
-    config = load_agent_config(AGENTS_DIR / f"{agent_name}.md")
+    config = {"name": agent_name, **load_agent_config(AGENTS_DIR / f"{agent_name}.md")}
     client = make_client()
     policy = Policy(approver=deny_all if unattended else terminal_approver)
     toolset = Toolset(config.get("tools", []), policy)  # no `tools:` key means no tools: access is opt-in
-    return run_agent(task, config, client, toolset)
+    # crates a new tracer file to write in given agent name and timestamp
+    with Tracer(new_trace_path(TRACES_DIR, agent_name)) as tracer:
+        try:
+            return run_agent(task, config, client, toolset, tracer)
+        finally:
+            # stderr, so stdout stays just the answer (useful when scripts capture it)
+            print(f"trace: {tracer.path}", file=sys.stderr)
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -54,7 +63,7 @@ def main(argv: list[str] | None = None) -> None:
     `argv` defaults to the real command line; tests pass their own list.
     """
     agents = sorted(path.stem for path in AGENTS_DIR.glob("*.md"))
-    
+
     # this block is ai generated and i am trusting it works
     parser = argparse.ArgumentParser(prog="harness", description="Run an agent on a task.")
     # nargs="+" collects every remaining word, so quotes around the task are optional

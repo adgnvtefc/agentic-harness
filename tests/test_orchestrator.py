@@ -1,5 +1,8 @@
 """The orchestrator: building the client, wiring config -> toolset -> agent, and the CLI."""
 
+import json
+import re
+
 import pytest
 
 from harness import orchestrator
@@ -62,8 +65,8 @@ def captured_run(monkeypatch):
     """Replace make_client and run_agent; record what the orchestrator hands the agent."""
     seen = {}
 
-    def fake_run_agent(task, config, client, toolset):
-        seen.update(task=task, config=config, client=client, toolset=toolset)
+    def fake_run_agent(task, config, client, toolset, tracer):
+        seen.update(task=task, config=config, client=client, toolset=toolset, tracer=tracer)
         return "agent result"
 
     monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("unused")]))
@@ -115,6 +118,11 @@ class TestRun:
         with pytest.raises(ValueError, match="read_fle"):
             orchestrator.run("t")
         assert captured_run == {}  # the agent never started
+
+    def test_config_includes_agent_name(self, agents_dir, captured_run):
+        write_agent(agents_dir, "reader")
+        orchestrator.run("t", agent_name="reader")
+        assert captured_run["config"]["name"] == "reader"
 
     def test_end_to_end_with_fake_model(self, agents_dir, monkeypatch):
         # Not mocking run_agent: the real loop runs, only the model is scripted.
@@ -187,3 +195,52 @@ class TestMain:
         monkeypatch.setattr("sys.argv", ["harness", "from", "argv"])
         orchestrator.main()
         assert run_calls[0]["task"] == "from argv"
+
+
+class TestTraceFiles:
+    @pytest.fixture
+    def fake_model(self, agents_dir, monkeypatch):
+        write_agent(agents_dir, "base", tools=["read_file"])
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([reply("the answer")]))
+
+    def trace_files(self, traces_dir):
+        return sorted(traces_dir.glob("*.jsonl"))
+
+    def test_each_run_writes_one_trace(self, fake_model, traces_dir):
+        orchestrator.run("t")
+        orchestrator.run("t")
+        assert len(self.trace_files(traces_dir)) == 2
+
+    def test_trace_name(self, fake_model, traces_dir):
+        orchestrator.run("t")
+        name = self.trace_files(traces_dir)[0].name
+        assert re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}_base_[0-9a-f]{4}\.jsonl", name)
+
+    def test_trace_contents(self, fake_model, traces_dir):
+        orchestrator.run("say hi")
+        events = [json.loads(line) for line in self.trace_files(traces_dir)[0].read_text().splitlines()]
+        assert [e["event"] for e in events] == ["run_start", "model_response", "run_end"]
+        assert events[0]["task"] == "say hi"
+        assert events[0]["config"]["name"] == "base"
+        assert events[0]["approver"] == "terminal_approver"
+        assert events[-1]["answer"] == "the answer"
+
+    def test_unattended_is_visible_in_trace(self, fake_model, traces_dir):
+        orchestrator.run("t", unattended=True)
+        start = json.loads(self.trace_files(traces_dir)[0].read_text().splitlines()[0])
+        assert start["approver"] == "deny_all"
+
+    def test_path_printed_to_stderr(self, fake_model, traces_dir, capsys):
+        orchestrator.run("t")
+        captured = capsys.readouterr()
+        assert f"trace: {self.trace_files(traces_dir)[0]}" in captured.err
+        assert "trace:" not in captured.out  # stdout stays clean for the answer
+
+    def test_crashed_run_still_leaves_a_trace(self, agents_dir, traces_dir, monkeypatch, capsys):
+        write_agent(agents_dir, "base")
+        monkeypatch.setattr(orchestrator, "make_client", lambda: FakeClient([]))  # first model call fails
+        with pytest.raises(AssertionError):
+            orchestrator.run("t")
+        events = [json.loads(line) for line in self.trace_files(traces_dir)[0].read_text().splitlines()]
+        assert events[-1]["outcome"] == "crashed"
+        assert "trace:" in capsys.readouterr().err  # the path is printed even after a crash

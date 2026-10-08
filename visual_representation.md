@@ -3,7 +3,7 @@
 A picture of the agent as it exists today, kept up to date as the code changes.
 Diagrams are [Mermaid](https://mermaid.js.org/), which GitHub renders automatically.
 
-**Last updated:** 2026-10-07, at commit `73b68b5` (policy layer, CLI flags, approver messages)
+**Last updated:** 2026-10-08, trace logging; trace format defined in tracer.py (on top of commit `ee14bb1`)
 
 ---
 
@@ -34,12 +34,14 @@ flowchart TD
         client["OpenAI client"]
         policy["Policy<br/>terminal_approver, or<br/>deny_all if --unattended"]
         toolset["Toolset<br/>only the tools this agent lists"]
+        tracer["Tracer<br/>one new file per run"]
         policy --> toolset
     end
 
     agentloop["Agent loop<br/>agent.py: run_agent()"]
     omlx[("oMLX server<br/>Qwen3.8-27B")]
     ws[("workspace/<br/>the only folder tools can touch")]
+    traces[("traces/<br/>one .jsonl file per run")]
 
     user --> cli
     run -->|reads| inputs
@@ -48,6 +50,8 @@ flowchart TD
     agentloop <-->|"POST /v1/chat/completions"| omlx
     agentloop <-->|"every tool call"| toolset
     toolset <--> ws
+    agentloop -->|"every step: events"| tracer
+    tracer --> traces
 ```
 
 ---
@@ -67,17 +71,21 @@ sequenceDiagram
     participant T as Toolset
     participant P as Policy
     participant F as Tool function
+    participant R as Tracer
 
     You->>O: harness "write primes.py and run it"
     O->>O: load config, make client,<br/>build Policy + Toolset
     O->>A: run_agent(task, config, client, toolset)
     A->>A: messages = [system, user task]<br/>tools = toolset.schemas()
+    A->>R: start: run_start (task, config, tools, approver)
 
     loop each step, up to max_steps
         A->>M: messages + tool schemas
-        M-->>A: assistant message
-        A->>A: append it to messages<br/>(reasoning_content dropped)
+        M-->>A: response: message, finish_reason, usage
+        A->>R: model_response (message, reasoning,<br/>usage, seconds)
+        A->>A: append message to history<br/>(reasoning dropped here, kept in the trace)
         alt no tool_calls
+            A->>R: finish: run_end (outcome: answered)
             A-->>O: final text answer
             O-->>You: print answer
         else has tool_calls
@@ -95,11 +103,12 @@ sequenceDiagram
                     F-->>T: result text
                 end
                 T-->>A: result or error, always a string
+                A->>R: tool_call (name, raw arguments,<br/>result, seconds)
                 A->>A: append {role: tool, tool_call_id, content}
             end
         end
     end
-    Note over A: max_steps reached: return<br/>"Stopped after N steps"
+    Note over A,R: max_steps reached: finish, run_end (outcome: max_steps)<br/>crash or Ctrl-C: the orchestrator's `with Tracer` writes<br/>run_end (crashed / interrupted), then the exception continues
 ```
 
 ---
@@ -168,7 +177,37 @@ what lets oMLX reuse its prompt cache instead of re-reading the whole conversati
 
 ---
 
-## 6. How the code is organized
+## 6. What a trace records
+
+One JSONL file per run in `traces/` (gitignored), e.g. `2026-10-08T01-17-47_base_5739.jsonl`.
+The format is defined in one place, `tracer.py`: the agent reports what happened
+(`start`, `model_response`, `tool_call`, `finish`), and the tracer decides what's recorded.
+One tracer = one run = one file. The orchestrator owns it with `with Tracer(path) as tracer:`,
+so even a crash or Ctrl-C ends the trace with exactly one `run_end`.
+Each line is flushed as it happens, so a crashed run still leaves its trace.
+From the real primes run above:
+
+```text
+run_start       agent=base  approver=terminal_approver  tools=[read_file, write_file, bash]
+model_response  step 1  7.0s  prompt=623 tokens  cached=0  out=204  -> write_file
+                reasoning: "The user is asking me to write a primes.py ..."
+tool_call       step 1  write_file -> "Wrote 381 characters to primes.py."
+model_response  step 2  2.1s  prompt=816  cached=0  out=43  -> bash
+tool_call       step 2  bash -> "[2, 3, 5, 7, 11, 13, 17, 19, 23, 29] (exit code 0)"
+model_response  step 3  3.9s  prompt=903  cached=0  out=101  -> final answer
+run_end         outcome=answered  steps=3  13.0s
+```
+
+| Event | When | Key fields |
+|---|---|---|
+| `run_start` | once, first | task, full config (incl. system prompt), tool schemas, approver |
+| `model_response` | every model call | message, **reasoning** (dropped from history, kept here), finish_reason, usage (tokens, cache, oMLX timings), seconds |
+| `tool_call` | every tool call | id, name, **raw** arguments string, result, seconds |
+| `run_end` | once, last | outcome: `answered` / `max_steps` / `crashed` / `interrupted`; answer or error; steps; seconds |
+
+---
+
+## 7. How the code is organized
 
 Arrows mean "imports". They only point one way: nothing imports the orchestrator,
 tools never import the machinery around them, and `policy.py` imports nothing at runtime.
@@ -179,6 +218,8 @@ flowchart TD
     orch --> loader["config_loader.py<br/>reads agents/*.md"]
     orch --> policy["policy.py<br/>Policy, approvers"]
     orch --> tools_api["tools/__init__.py<br/>public API"]
+    orch --> tracer["tracer.py<br/>JSONL events"]
+    agent --> tracer
     agent --> tools_api
     tools_api --> toolset["tools/toolset.py<br/>REGISTRY + Toolset"]
     toolset --> policy
@@ -194,7 +235,7 @@ flowchart TD
 
 What's planned, in rough order. Each becomes a diagram change when it lands.
 
-- **Trace logging:** every request, response, and tool call written to a file per run.
+- **Reading traces:** `harness show <trace>` to print a past run readably, and a summary line (steps, tokens, cache hits, time) at the end of each run.
 - **More tools:** `list_dir`, `edit`, eventually `web_search` and MCP servers.
 - **Sandbox:** `bash` runs in a container; then a `--yes` mode can auto-approve safely.
 - **Context management:** compaction when the conversation nears the 32k window.

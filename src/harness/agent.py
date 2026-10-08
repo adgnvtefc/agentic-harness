@@ -1,12 +1,20 @@
 """The agent loop: call the model, run any tool calls, feed results back, repeat."""
 
+import time
+
 from openai import OpenAI
+from openai.types.chat import ChatCompletion
 
 from harness.tools import Toolset
+from harness.tracer import Tracer
 
 
-def call_model(client: OpenAI, messages: list[dict], model: str, temperature: float, tools: list[dict]):
-    """Send `messages` + `tools` (schemas) to `model`. Return the assistant message object."""
+def call_model(client: OpenAI, messages: list[dict], model: str, temperature: float, tools: list[dict]) -> ChatCompletion:
+    """Send `messages` + `tools` (schemas) to `model`. Return the whole response.
+
+    The whole response, not just the message: `usage` (token counts, cache hits, and
+    oMLX's timing extras) and `finish_reason` live outside the message, and the trace wants them.
+    """
     # This becomes: POST {base_url}/chat/completions with a JSON body like
     #   {
     #     "model": "Qwen3.8-27B-MLX-8bit",       which model on the server (one server can host many)
@@ -51,15 +59,15 @@ def call_model(client: OpenAI, messages: list[dict], model: str, temperature: fl
     #     "usage": {"prompt_tokens": ..., "completion_tokens": ...},
     #   }
     # The SDK parses this into Python objects, so fields are attributes: response.choices[0].message.content
-    return response.choices[0].message
+    return response
 
 # PROVIDER-SPECIFIC: oMLX/Qwen puts thinking in `reasoning_content`; dropping it is a cache
 # optimization. Anthropic's native API requires thinking blocks to be sent back. Fix later.
-def run_agent(task: str, config: dict, client: OpenAI, toolset: Toolset) -> str:
+def run_agent(task: str, config: dict, client: OpenAI, toolset: Toolset, tracer: Tracer) -> str:
     """Run the loop until the model answers without calling a tool, or max_steps runs out.
 
     `config` comes from config_loader.load_agent_config; `client` from make_client;
-    `toolset` holds only the tools this agent's config lists.
+    `toolset` holds only the tools this agent's config lists; `tracer` records the run.
     The agent is handed everything it needs and never goes looking for settings itself.
 
     Return the model's final text answer. Print each tool call and a short
@@ -74,9 +82,16 @@ def run_agent(task: str, config: dict, client: OpenAI, toolset: Toolset) -> str:
         {"role": "user", "content": task},
     ]
 
+    # run_start now. run_end comes from tracer.finish() below, or, if this function
+    # raises, from the `with Tracer(...)` block of whoever created the tracer.
+    tracer.start(task, config, tools, approver=toolset.policy.approver.__name__)
+
     for step in range(1, max_steps + 1):
         # calls the client with model and these messages
-        msg = call_model(client, messages, config["model"], config["temperature"], tools)
+        started = time.monotonic()
+        response = call_model(client, messages, config["model"], config["temperature"], tools)
+        tracer.model_response(step, response, _since(started))
+        msg = response.choices[0].message
 
         # Append the assistant turn exactly as returned, tool_calls and their ids included,
         # so the tool results we add next have something to point back to.
@@ -86,18 +101,29 @@ def run_agent(task: str, config: dict, client: OpenAI, toolset: Toolset) -> str:
 
         # the model needs to make tool calls for there to be indicated a final response
         if not msg.tool_calls:
-            return msg.content or ""
+            answer = msg.content or ""
+            tracer.finish("answered", answer)
+            return answer
 
         # The model may request several tools in one turn; each needs exactly one reply.
         for call in msg.tool_calls:
             # prints function call name and arguments
             print(f"[step {step}] {call.function.name}({call.function.arguments})")
             # executes the tool; the toolset refuses tools this agent wasn't given
+            started = time.monotonic()
             result = toolset.execute(call.function.name, call.function.arguments)
+            tracer.tool_call(step, call, result, _since(started))
             # determines preview to print
             preview = result if len(result) <= 200 else result[:200] + "..."
             print(f"  -> {preview}")
             # give tool full context id
             messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
-    return f"Stopped after {max_steps} steps without a final answer."
+    answer = f"Stopped after {max_steps} steps without a final answer."
+    tracer.finish("max_steps", answer)
+    return answer
+
+
+def _since(started: float) -> float:
+    """Seconds since `started` (a time.monotonic() value), rounded for readable traces."""
+    return round(time.monotonic() - started, 3)

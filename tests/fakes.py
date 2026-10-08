@@ -28,8 +28,16 @@ def call(name: str, args: dict | str | None = None, id: str | None = None) -> di
     }
 
 
-def reply(content: str | None = None, tool_calls: list[dict] | None = None, reasoning: str | None = None) -> ChatCompletion:
-    """One model response. With tool_calls, finish_reason is "tool_calls"; otherwise "stop"."""
+def reply(
+    content: str | None = None,
+    tool_calls: list[dict] | None = None,
+    reasoning: str | None = None,
+    usage: dict | None = None,
+) -> ChatCompletion:
+    """One model response. With tool_calls, finish_reason is "tool_calls"; otherwise "stop".
+
+    `usage`, if given, is the token-count block, e.g. {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12}.
+    """
     message = {"role": "assistant", "content": content}
     if tool_calls:
         message["tool_calls"] = tool_calls
@@ -42,6 +50,7 @@ def reply(content: str | None = None, tool_calls: list[dict] | None = None, reas
             "created": 0,
             "model": "fake-model",
             "choices": [{"index": 0, "finish_reason": "tool_calls" if tool_calls else "stop", "message": message}],
+            **({"usage": usage} if usage else {}),
         }
     )
 

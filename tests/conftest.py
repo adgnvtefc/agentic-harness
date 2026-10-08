@@ -2,6 +2,7 @@
 
 import pytest
 
+from harness import orchestrator
 from harness.tools import REGISTRY, Tool
 from harness.tools import base
 from harness.tools.builtin import fs, shell
@@ -20,6 +21,14 @@ def workspace(tmp_path, monkeypatch):
     for module in (base, fs, shell):
         monkeypatch.setattr(module, "WORKSPACE", ws)
     return ws
+
+
+@pytest.fixture(autouse=True)
+def traces_dir(tmp_path, monkeypatch):
+    """Send every run's trace to a temp directory, for every test (autouse): tests never fill traces/."""
+    directory = tmp_path / "traces"
+    monkeypatch.setattr(orchestrator, "TRACES_DIR", directory)
+    return directory
 
 
 @pytest.fixture
